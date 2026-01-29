@@ -7,7 +7,6 @@
  *   - SpO2 < 90%        → ALLARME (melodia)
  *   - SpO2 >= 90%       → NORMALE (silenzio)
  *   - Allarme > 30s     → PERSISTENTE (tono piatto)
- *   - Sensore staccato  → ERRORE (beep intermittente)
  * 
  * ============================================================================
  */
@@ -34,14 +33,12 @@
 // TIMING
 // ============================================================================
 #define TEMPO_PERSISTENTE      30000  // 30s per tono piatto
-#define INTERVALLO_BEEP_ERRORE 300    // ms tra beep errore
 #define INTERVALLO_LETTURA     1000   // ms tra letture
 
 // ============================================================================
 // FREQUENZE
 // ============================================================================
 #define FREQ_PERSISTENTE  2000
-#define FREQ_ERRORE       600
 
 // ============================================================================
 // STATI
@@ -49,8 +46,7 @@
 enum Stato {
   NORMALE,
   ALLARME,
-  PERSISTENTE,
-  ERRORE
+  PERSISTENTE
 };
 
 // ============================================================================
@@ -65,15 +61,13 @@ struct Paziente {
   float spo2;
   
   unsigned long tempoInizioAllarme;
-  unsigned long ultimoBeep;
-  bool beepOn;
 };
 
 // ============================================================================
 // PAZIENTI
 // ============================================================================
-Paziente p1 = {"Paziente 1", BUZZER_PIN1, POT_SPO2_P1, NORMALE, 98.0, 0, 0, false};
-Paziente p2 = {"Paziente 2", BUZZER_PIN2, POT_SPO2_P2, NORMALE, 98.0, 0, 0, false};
+Paziente p1 = {"Paziente 1", BUZZER_PIN1, POT_SPO2_P1, NORMALE, 98.0, 0};
+Paziente p2 = {"Paziente 2", BUZZER_PIN2, POT_SPO2_P2, NORMALE, 98.0, 0};
 
 // ============================================================================
 // TIMING LETTURA
@@ -87,7 +81,6 @@ const int melody[] = {NOTE_E6, NOTE_E6, 0, NOTE_E6, NOTE_E6, 0, NOTE_E6, NOTE_E6
 const int durate[] = {8, 8, 8, 8, 8, 8, 8, 8, 8, 4};
 const int NUM_NOTE = 10;
 
-// Per melodia non bloccante
 int notaCorrente1 = 0;
 int notaCorrente2 = 0;
 unsigned long ultimaNota1 = 0;
@@ -107,8 +100,6 @@ void cambiaStato(Paziente &p, Stato nuovo) {
   Serial.printf("[%s] %d -> %d\n", p.nome, p.stato, nuovo);
   
   noTone(p.buzzerPin);
-  p.beepOn = false;
-  
   p.stato = nuovo;
   
   if (nuovo == ALLARME) {
@@ -118,26 +109,9 @@ void cambiaStato(Paziente &p, Stato nuovo) {
 
 void leggiSensore(Paziente &p) {
   int raw = analogRead(p.potPin);
-  
-  // Errore sensore: valori estremi
-  if (raw < 50 || raw > 4000) {
-    cambiaStato(p, ERRORE);
-    return;
-  }
-  
-  // Se era in errore e ora è ok
-  if (p.stato == ERRORE) {
-    cambiaStato(p, NORMALE);
-  }
-  
   p.spo2 = mapFloat(raw, 0, 4095, SPO2_MIN, SPO2_MAX);
   
-  Serial.printf("[%s] SpO2: %.1f%%\n", p.nome, p.spo2);
-}
-
-void verificaSoglia(Paziente &p) {
-  if (p.stato == ERRORE) return;
-  
+  // Controllo soglia sui valori trasformati
   if (p.spo2 < SPO2_ALLARME) {
     if (p.stato == NORMALE) {
       cambiaStato(p, ALLARME);
@@ -147,6 +121,8 @@ void verificaSoglia(Paziente &p) {
       cambiaStato(p, NORMALE);
     }
   }
+  
+  Serial.printf("[%s] SpO2: %.1f%%\n", p.nome, p.spo2);
 }
 
 void controllaTimeout(Paziente &p) {
@@ -178,21 +154,6 @@ void suonaPersistente(Paziente &p) {
   tone(p.buzzerPin, FREQ_PERSISTENTE);
 }
 
-void suonaErrore(Paziente &p) {
-  unsigned long now = millis();
-  
-  if (now - p.ultimoBeep >= INTERVALLO_BEEP_ERRORE) {
-    p.ultimoBeep = now;
-    p.beepOn = !p.beepOn;
-    
-    if (p.beepOn) {
-      tone(p.buzzerPin, FREQ_ERRORE);
-    } else {
-      noTone(p.buzzerPin);
-    }
-  }
-}
-
 void gestisciAudio(Paziente &p, int &nota, unsigned long &ultimaNota) {
   switch (p.stato) {
     case NORMALE:
@@ -202,9 +163,6 @@ void gestisciAudio(Paziente &p, int &nota, unsigned long &ultimaNota) {
       break;
     case PERSISTENTE:
       suonaPersistente(p);
-      break;
-    case ERRORE:
-      suonaErrore(p);
       break;
   }
 }
@@ -220,9 +178,8 @@ void setup() {
   pinMode(BUZZER_PIN2, OUTPUT);
   
   Serial.println("\n=== ALLARME SpO2 ===");
-  Serial.println("NORMALE < 90% -> ALLARME");
-  Serial.println("ALLARME 30s -> PERSISTENTE");
-  Serial.println("Sensore staccato -> ERRORE\n");
+  Serial.println("SpO2 < 90% -> ALLARME");
+  Serial.println("ALLARME 30s -> PERSISTENTE\n");
 }
 
 // ============================================================================
@@ -231,22 +188,16 @@ void setup() {
 void loop() {
   unsigned long now = millis();
   
-  // Lettura sensori ogni secondo
   if (now - ultimaLettura >= INTERVALLO_LETTURA) {
     ultimaLettura = now;
     
     leggiSensore(p1);
     leggiSensore(p2);
-    
-    verificaSoglia(p1);
-    verificaSoglia(p2);
   }
   
-  // Controllo timeout persistente
   controllaTimeout(p1);
   controllaTimeout(p2);
   
-  // Audio
   gestisciAudio(p1, notaCorrente1, ultimaNota1);
   gestisciAudio(p2, notaCorrente2, ultimaNota2);
   
